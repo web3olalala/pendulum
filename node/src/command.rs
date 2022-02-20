@@ -21,7 +21,7 @@ use std::{io::Write, net::SocketAddr};
 fn load_spec(id: &str) -> std::result::Result<Box<dyn sc_service::ChainSpec>, String> {
 	Ok(match id {
 		"dev" => Box::new(chain_spec::development_config()),
-		"pendulum-rococo" => Box::new(chain_spec::local_testnet_config()),
+		"pendulum-rococo" => Box::new(chain_spec::live_testnet_config()),
 		"" | "local" => Box::new(chain_spec::local_testnet_config()),
 		path => Box::new(chain_spec::ChainSpec::from_json_file(std::path::PathBuf::from(path))?),
 	})
@@ -262,8 +262,8 @@ pub fn run() -> Result<()> {
 				let state_version =
 					RelayChainCli::native_runtime_version(&config.chain_spec).state_version();
 
-				let block: Block =
-					generate_genesis_block(&config.chain_spec, state_version).map_err(|e| format!("{:?}", e))?;
+				let block: Block = generate_genesis_block(&config.chain_spec, state_version)
+					.map_err(|e| format!("{:?}", e))?;
 				let genesis_state = format!("0x{:?}", HexDisplay::from(&block.header().encode()));
 
 				let tokio_handle = config.tokio_handle.clone();
