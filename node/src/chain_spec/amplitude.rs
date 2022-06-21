@@ -47,6 +47,10 @@ where
 	AccountPublic::from(get_public_from_seed::<TPublic>(seed)).into_account()
 }
 
+fn get_authority_keys_from_public_key(src: [u8; 32]) -> (AccountId, AuraId) {
+	(src.clone().into(), src.unchecked_into())
+}
+
 pub fn generate_session_keys(keys: AuraId) -> pendulum_parachain_runtime::SessionKeys {
 	pendulum_parachain_runtime::SessionKeys { aura: keys }
 }
@@ -55,13 +59,18 @@ pub fn amplitude_mainnet_config() -> ChainSpec {
 	let id: ParaId = PARA_ID.into();
 
 	let mut properties = sc_chain_spec::Properties::new();
-	properties.insert("tokenSymbol".into(), "UNIT".into());
+	// FIXME maybe we need something else here
+	properties.insert("tokenSymbol".into(), "AMPE".into());
+
+	// check decimals here https://github.com/centrifuge/centrifuge-chain/blob/96484bcc4190483e05e59a66253701db728bd92f/runtime/common/src/lib.rs#L277
 	properties.insert("tokenDecimals".into(), 12.into());
+
+	// what exactly is this used for? centrifuge does not use it
 	properties.insert("ss58Format".into(), 42.into());
 
 	ChainSpec::from_genesis(
 		"Amplitude",
-		"Amplitude",
+		"amplitude",
 		ChainType::Live,
 		move || pendulum_mainnet_genesis(vec![], vec![], id),
 		Vec::new(),
@@ -90,6 +99,8 @@ fn pendulum_mainnet_genesis(
 		parachain_info: pendulum_parachain_runtime::ParachainInfoConfig { parachain_id: id },
 		collator_selection: pendulum_parachain_runtime::CollatorSelectionConfig {
 			invulnerables: invulnerables.iter().cloned().map(|(acc, _)| acc).collect(),
+			// TODO maybe change this. 
+			// But if we change it to above 0 make sure the invulnerables have enough balance to pay it
 			candidacy_bond: EXISTENTIAL_DEPOSIT * 16,
 			..Default::default()
 		},
