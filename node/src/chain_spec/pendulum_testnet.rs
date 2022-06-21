@@ -1,12 +1,12 @@
 use cumulus_primitives_core::ParaId;
 use pendulum_parachain_runtime::{AccountId, AuraId, Signature, EXISTENTIAL_DEPOSIT};
 use sc_chain_spec::{ChainSpecExtension, ChainSpecGroup};
-use sc_service::ChainType;
 use serde::{Deserialize, Serialize};
 use sp_core::{ed25519, Pair, Public};
 use sp_runtime::traits::{IdentifyAccount, Verify};
 
-/// Specialized `ChainSpec` for the normal parachain runtime.
+use super::*;
+
 pub type ChainSpec =
 	sc_service::GenericChainSpec<pendulum_parachain_runtime::GenesisConfig, Extensions>;
 

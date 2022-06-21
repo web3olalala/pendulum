@@ -1,9 +1,8 @@
 use crate::{
-	chain_spec,
+	chain_spec::{amplitude, pendulum_testnet},
 	cli::{Cli, RelayChainCli, Subcommand},
 	service::{new_partial, TemplateRuntimeExecutor},
 };
-use sp_core::Encode;
 use cumulus_client_service::genesis::generate_genesis_block;
 use cumulus_primitives_core::ParaId;
 use log::info;
@@ -17,16 +16,18 @@ use sc_service::{
 	config::{BasePath, PrometheusConfig},
 	TaskManager,
 };
-use sp_core::hexdisplay::HexDisplay;
+use sp_core::{hexdisplay::HexDisplay, Encode};
 use sp_runtime::traits::Block as BlockT;
 use std::{io::Write, net::SocketAddr};
 
 fn load_spec(id: &str) -> std::result::Result<Box<dyn sc_service::ChainSpec>, String> {
 	Ok(match id {
-		"dev" => Box::new(chain_spec::development_config()),
-		"pendulum-rococo" => Box::new(chain_spec::local_testnet_config()),
-		"" | "local" => Box::new(chain_spec::local_testnet_config()),
-		path => Box::new(chain_spec::ChainSpec::from_json_file(std::path::PathBuf::from(path))?),
+		"dev" => Box::new(pendulum_testnet::development_config()),
+		"pendulum-rococo" => Box::new(pendulum_testnet::local_testnet_config()),
+		"amplitude" => Box::new(amplitude::amplitude_mainnet_config()),
+		"" | "local" => Box::new(pendulum_testnet::local_testnet_config()),
+		path =>
+			Box::new(pendulum_testnet::ChainSpec::from_json_file(std::path::PathBuf::from(path))?),
 	})
 }
 
@@ -263,7 +264,7 @@ pub fn run() -> Result<()> {
 			let collator_options = cli.run.collator_options();
 
 			runner.run_node_until_exit(|config| async move {
-				let para_id = chain_spec::Extensions::try_get(&*config.chain_spec)
+				let para_id = pendulum_testnet::Extensions::try_get(&*config.chain_spec)
 					.map(|e| e.para_id)
 					.ok_or_else(|| "Could not find parachain ID in chain-spec.")?;
 
