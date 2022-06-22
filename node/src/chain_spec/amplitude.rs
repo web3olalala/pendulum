@@ -1,7 +1,6 @@
 use super::*;
 
-// FIXME correct with the appropriate Para ID
-pub const PARA_ID: u32 = 2000;
+pub const PARA_ID: u32 = 2124;
 
 use pendulum_parachain_runtime::{AccountId, AuraId, Signature, EXISTENTIAL_DEPOSIT};
 pub type ChainSpec =
