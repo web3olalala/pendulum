@@ -16,6 +16,17 @@ pub fn get_public_from_seed<TPublic: Public>(seed: &str) -> <TPublic::Pair as Pa
 		.public()
 }
 
+fn amplitude_properties() -> Map<String, Value> {
+	let mut properties = sc_chain_spec::Properties::new();
+	// FIXME maybe we need something else here
+	properties.insert("tokenSymbol".into(), "AMPE".into());
+	// check decimals here https://github.com/centrifuge/centrifuge-chain/blob/96484bcc4190483e05e59a66253701db728bd92f/runtime/common/src/lib.rs#L277
+	properties.insert("tokenDecimals".into(), 12.into());
+	// what exactly is this used for? centrifuge does not use it
+	properties.insert("ss58Format".into(), 42.into());
+	properties
+}
+
 /// The extensions for the [`ChainSpec`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ChainSpecGroup, ChainSpecExtension)]
 #[serde(deny_unknown_fields)]
@@ -54,19 +65,24 @@ pub fn generate_session_keys(keys: AuraId) -> pendulum_parachain_runtime::Sessio
 	pendulum_parachain_runtime::SessionKeys { aura: keys }
 }
 
-pub fn amplitude_mainnet_config() -> ChainSpec {
+pub fn amplitude_local_config() -> ChainSpec {
 	let id: ParaId = PARA_ID.into();
 
-	let mut properties = sc_chain_spec::Properties::new();
-	// FIXME maybe we need something else here
-	properties.insert("tokenSymbol".into(), "AMPE".into());
-
-	// check decimals here https://github.com/centrifuge/centrifuge-chain/blob/96484bcc4190483e05e59a66253701db728bd92f/runtime/common/src/lib.rs#L277
-	properties.insert("tokenDecimals".into(), 12.into());
-
-	// what exactly is this used for? centrifuge does not use it
-	properties.insert("ss58Format".into(), 42.into());
-
+	ChainSpec::from_genesis(
+		"Amplitude",
+		"amplitude",
+		ChainType::Local,
+		move || pendulum_mainnet_genesis(vec![], vec![], id),
+		Vec::new(),
+		None,
+		None,
+		None,
+		Some(amplitude_properties()),
+		Extensions { relay_chain: "kusama".into(), para_id: id.into() },
+	)
+}
+pub fn amplitude_mainnet_config() -> ChainSpec {
+	let id: ParaId = PARA_ID.into();
 	ChainSpec::from_genesis(
 		"Amplitude",
 		"amplitude",
@@ -76,7 +92,7 @@ pub fn amplitude_mainnet_config() -> ChainSpec {
 		None,
 		None,
 		None,
-		Some(properties),
+		Some(amplitude_properties()),
 		Extensions { relay_chain: "kusama".into(), para_id: id.into() },
 	)
 }
@@ -89,7 +105,9 @@ fn pendulum_mainnet_genesis(
 	pendulum_parachain_runtime::GenesisConfig {
 		system: pendulum_parachain_runtime::SystemConfig {
 			code: pendulum_parachain_runtime::WASM_BINARY
-				.expect("WASM binary was not build, please build it!")
+				.expect(
+					"WASM binary was not build, please buildget_authority_keys_from_public_key it!",
+				)
 				.to_vec(),
 		},
 		balances: pendulum_parachain_runtime::BalancesConfig {
@@ -98,7 +116,7 @@ fn pendulum_mainnet_genesis(
 		parachain_info: pendulum_parachain_runtime::ParachainInfoConfig { parachain_id: id },
 		collator_selection: pendulum_parachain_runtime::CollatorSelectionConfig {
 			invulnerables: invulnerables.iter().cloned().map(|(acc, _)| acc).collect(),
-			// TODO maybe change this. 
+			// TODO maybe change this.
 			// But if we change it to above 0 make sure the invulnerables have enough balance to pay it
 			candidacy_bond: EXISTENTIAL_DEPOSIT * 16,
 			..Default::default()
