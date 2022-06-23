@@ -1,4 +1,4 @@
-use crate::chain_spec::pendulum_testnet;
+use crate::chain_spec::Extensions;
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -110,7 +110,7 @@ impl RelayChainCli {
 		para_config: &sc_service::Configuration,
 		relay_chain_args: impl Iterator<Item = &'a String>,
 	) -> Self {
-		let extension = pendulum_testnet::Extensions::try_get(&*para_config.chain_spec);
+		let extension = Extensions::try_get(&*para_config.chain_spec);
 		let chain_id = extension.map(|e| e.relay_chain.clone());
 		let base_path = para_config.base_path.as_ref().map(|x| x.path().join("polkadot"));
 		Self { base_path, chain_id, base: polkadot_cli::RunCmd::parse_from(relay_chain_args) }
