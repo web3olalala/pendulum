@@ -251,7 +251,7 @@ pub fn pendulum_config() -> PendulumChainSpec {
 	sp_core::crypto::set_default_ss58_version(pendulum_runtime::SS58Prefix::get().into());
 
 	let mut properties = sc_chain_spec::Properties::new();
-	//properties.insert("tokenSymbol".into(), "PEN".into());
+	properties.insert("tokenSymbol".into(), "PEN".into());
 	properties.insert("tokenDecimals".into(), 12u32.into());
 	properties.insert("ss58Format".into(), pendulum_runtime::SS58Prefix::get().into());
 
