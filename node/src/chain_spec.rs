@@ -408,7 +408,12 @@ pub fn development_config() -> DevelopmentChainSpec {
 					get_account_id_from_seed::<sr25519::Public>("Eve//stash"),
 					get_account_id_from_seed::<sr25519::Public>("Ferdie//stash"),
 				],
+				vec![
+					get_account_id_from_seed::<sr25519::Public>("Alice"),
+					get_account_id_from_seed::<sr25519::Public>("Bob"),
+				],
 				1000.into(),
+				false,
 			)
 		},
 		Vec::new(),
@@ -463,7 +468,12 @@ pub fn local_testnet_config() -> DevelopmentChainSpec {
 					get_account_id_from_seed::<sr25519::Public>("Eve//stash"),
 					get_account_id_from_seed::<sr25519::Public>("Ferdie//stash"),
 				],
+				vec![
+					get_account_id_from_seed::<sr25519::Public>("Alice"),
+					get_account_id_from_seed::<sr25519::Public>("Bob"),
+				],
 				1000.into(),
+				false,
 			)
 		},
 		// Bootnodes
@@ -642,14 +652,7 @@ fn foucoco_genesis(
 
 	let token_balances = balances
 		.iter()
-		.flat_map(|k| {
-			vec![
-				(k.0.clone(), XCM(DOT), 1 << 60),
-				(k.0.clone(), XCM(KSM), 1 << 60),
-				// (k.0.clone(), XCM(PEN), 1 << 60),
-				// (k.0.clone(), XCM(AMPE), 1 << 60),
-			]
-		})
+		.flat_map(|k| vec![(k.0.clone(), XCM(DOT), 1 << 60), (k.0.clone(), XCM(KSM), 1 << 60)])
 		.collect();
 
 	let stakers: Vec<_> = invulnerables
@@ -888,17 +891,72 @@ fn pendulum_genesis(
 fn testnet_genesis(
 	invulnerables: Vec<(AccountId, AuraId)>,
 	endowed_accounts: Vec<AccountId>,
+	authorized_oracles: Vec<AccountId>,
 	id: ParaId,
+	start_shutdown: bool,
 ) -> development_runtime::GenesisConfig {
+	fn default_pair(currency_id: CurrencyId) -> VaultCurrencyPair<CurrencyId> {
+		VaultCurrencyPair {
+			collateral: currency_id,
+			wrapped: development_runtime::DefaultWrappedCurrencyId::get(),
+		}
+	}
+
+	// Used to create bounded vecs for genesis config
+	// Does not return a result but panics because the genesis config is hardcoded
+	fn create_bounded_vec(input: &str) -> BoundedVec<u8, development_runtime::FieldLength> {
+		let bounded_vec =
+			BoundedVec::try_from(input.as_bytes().to_vec()).expect("Failed to create bounded vec");
+		bounded_vec
+	}
+
+	// Testnet organization
+	let organization_testnet_sdf =
+		development_runtime::Organization { name: create_bounded_vec("sdftest"), id: 1u128 };
+	// Testnet validators
+	let validators = vec![
+		foucoco_runtime::Validator {
+			name: create_bounded_vec("$sdftest1"),
+			public_key: create_bounded_vec(
+				"GDKXE2OZMJIPOSLNA6N6F2BVCI3O777I2OOC4BV7VOYUEHYX7RTRYA7Y",
+			),
+			organization_id: organization_testnet_sdf.id,
+		},
+		foucoco_runtime::Validator {
+			name: create_bounded_vec("$sdftest2"),
+			public_key: create_bounded_vec(
+				"GCUCJTIYXSOXKBSNFGNFWW5MUQ54HKRPGJUTQFJ5RQXZXNOLNXYDHRAP",
+			),
+			organization_id: organization_testnet_sdf.id,
+		},
+		foucoco_runtime::Validator {
+			name: create_bounded_vec("$sdftest3"),
+			public_key: create_bounded_vec(
+				"GC2V2EFSXN6SQTWVYA5EPJPBWWIMSD2XQNKUOHGEKB535AQE2I6IXV2Z",
+			),
+			organization_id: organization_testnet_sdf.id,
+		},
+	];
+	let organizations = vec![organization_testnet_sdf];
+
+	let balances: Vec<_> = endowed_accounts
+		.iter()
+		.cloned()
+		.map(|k| (k, INITIAL_ISSUANCE_PER_SIGNATORY))
+		.collect();
+
+	let token_balances = balances
+		.iter()
+		.flat_map(|k| vec![(k.0.clone(), XCM(DOT), 1 << 60), (k.0.clone(), XCM(KSM), 1 << 60)])
+		.collect();
+
 	development_runtime::GenesisConfig {
 		system: development_runtime::SystemConfig {
 			code: development_runtime::WASM_BINARY
 				.expect("WASM binary was not build, please build it!")
 				.to_vec(),
 		},
-		balances: development_runtime::BalancesConfig {
-			balances: endowed_accounts.iter().cloned().map(|k| (k, 1 << 60)).collect(),
-		},
+		balances: development_runtime::BalancesConfig { balances },
 		parachain_info: development_runtime::ParachainInfoConfig { parachain_id: id },
 		collator_selection: development_runtime::CollatorSelectionConfig {
 			invulnerables: invulnerables.iter().cloned().map(|(acc, _)| acc).collect(),
@@ -924,6 +982,100 @@ fn testnet_genesis(
 		parachain_system: Default::default(),
 		polkadot_xcm: amplitude_runtime::PolkadotXcmConfig {
 			safe_xcm_version: Some(SAFE_XCM_VERSION),
+		},
+		tokens: development_runtime::TokensConfig {
+			// Configure the initial token supply for the native currency and USDC asset
+			balances: token_balances,
+		},
+		issue: development_runtime::IssueConfig {
+			issue_period: foucoco_runtime::DAYS,
+			issue_minimum_transfer_amount: 1000,
+			limit_volume_amount: None,
+			limit_volume_currency_id: XCM(DOT),
+			current_volume_amount: 0u32.into(),
+			interval_length: (60u32 * 60 * 24).into(),
+			last_interval_index: 0u32.into(),
+		},
+		redeem: development_runtime::RedeemConfig {
+			redeem_period: foucoco_runtime::DAYS,
+			redeem_minimum_transfer_amount: 100,
+			limit_volume_amount: None,
+			limit_volume_currency_id: XCM(DOT),
+			current_volume_amount: 0u32.into(),
+			interval_length: (60u32 * 60 * 24).into(),
+			last_interval_index: 0u32.into(),
+		},
+		replace: development_runtime::ReplaceConfig {
+			replace_period: foucoco_runtime::DAYS,
+			replace_minimum_transfer_amount: 1000,
+		},
+		security: development_runtime::SecurityConfig {
+			initial_status: if start_shutdown {
+				foucoco_runtime::StatusCode::Shutdown
+			} else {
+				foucoco_runtime::StatusCode::Error
+			},
+		},
+		stellar_relay: development_runtime::StellarRelayConfig {
+			old_validators: vec![],
+			old_organizations: vec![],
+			validators,
+			organizations,
+			enactment_block_height: 0,
+			is_public_network: false,
+			phantom: Default::default(),
+		},
+		oracle: development_runtime::OracleConfig {
+			max_delay: u32::MAX,
+			oracle_keys: vec![
+				Key::ExchangeRate(CurrencyId::XCM(ForeignCurrencyId::DOT)),
+				Key::ExchangeRate(CurrencyId::AlphaNum4 {
+					code: *b"USDC",
+					issuer: [
+						20, 209, 150, 49, 176, 55, 23, 217, 171, 154, 54, 110, 16, 50, 30, 226,
+						102, 231, 46, 199, 108, 171, 97, 144, 240, 161, 51, 109, 72, 34, 159, 139,
+					],
+				}),
+				Key::FeeEstimation,
+			],
+		},
+		vault_registry: development_runtime::VaultRegistryConfig {
+			minimum_collateral_vault: vec![(XCM(DOT), 0), (XCM(KSM), 0)],
+			punishment_delay: development_runtime::DAYS,
+			secure_collateral_threshold: vec![
+				(default_pair(XCM(DOT)), FixedU128::checked_from_rational(260, 100).unwrap()),
+				(default_pair(XCM(KSM)), FixedU128::checked_from_rational(260, 100).unwrap()),
+			], /* 260% */
+			premium_redeem_threshold: vec![
+				(default_pair(XCM(DOT)), FixedU128::checked_from_rational(200, 100).unwrap()),
+				(default_pair(XCM(KSM)), FixedU128::checked_from_rational(200, 100).unwrap()),
+			], /* 200% */
+			liquidation_collateral_threshold: vec![
+				(default_pair(XCM(DOT)), FixedU128::checked_from_rational(150, 100).unwrap()),
+				(default_pair(XCM(KSM)), FixedU128::checked_from_rational(150, 100).unwrap()),
+			], /* 150% */
+			system_collateral_ceiling: vec![
+				(default_pair(XCM(DOT)), 60_000 * DOT.one()),
+				(default_pair(XCM(KSM)), 60_000 * KSM.one()),
+			],
+		},
+		fee: development_runtime::FeeConfig {
+			issue_fee: FixedU128::checked_from_rational(15, 10000).unwrap(), // 0.15%
+			issue_griefing_collateral: FixedU128::checked_from_rational(5, 100000).unwrap(), // 0.005%
+			redeem_fee: FixedU128::checked_from_rational(5, 1000).unwrap(),  // 0.5%
+			premium_redeem_fee: FixedU128::checked_from_rational(5, 100).unwrap(), // 5%
+			punishment_fee: FixedU128::checked_from_rational(1, 10).unwrap(), // 10%
+			replace_griefing_collateral: FixedU128::checked_from_rational(1, 10).unwrap(), // 10%
+		},
+		nomination: development_runtime::NominationConfig { is_nomination_enabled: false },
+		dia_oracle: development_runtime::DiaOracleConfig {
+			authorized_accounts: authorized_oracles,
+			supported_currencies: vec![development_runtime::AssetId::new(
+				b"Polkadot".to_vec(),
+				b"DOT".to_vec(),
+			)],
+			batching_api: b"http://localhost:8070/currencies".to_vec(),
+			coin_infos_map: vec![],
 		},
 	}
 }

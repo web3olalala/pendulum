@@ -9,17 +9,20 @@ include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 mod weights;
 pub mod xcm_config;
 
+use codec::Encode;
+pub use dia_oracle::dia::*;
+
 use smallvec::smallvec;
 use sp_api::impl_runtime_apis;
-use sp_core::{crypto::KeyTypeId, OpaqueMetadata};
+use sp_core::{crypto::KeyTypeId, OpaqueMetadata, H256};
 use sp_runtime::{
 	create_runtime_str, generic, impl_opaque_keys,
-	traits::{AccountIdLookup, BlakeTwo256, Block as BlockT},
+	traits::{AccountIdConversion, AccountIdLookup, BlakeTwo256, Block as BlockT, Convert},
 	transaction_validity::{TransactionSource, TransactionValidity},
-	ApplyExtrinsicResult,
+	ApplyExtrinsicResult, DispatchError, FixedPointNumber, SaturatedConversion,
 };
 
-use sp_std::prelude::*;
+use sp_std::{marker::PhantomData, prelude::*};
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
 use sp_version::RuntimeVersion;
@@ -28,7 +31,7 @@ use frame_support::{
 	construct_runtime,
 	dispatch::DispatchClass,
 	parameter_types,
-	traits::Everything,
+	traits::{ConstU32, Contains, Everything},
 	weights::{
 		constants::WEIGHT_REF_TIME_PER_SECOND, ConstantMultiplier, Weight, WeightToFeeCoefficient,
 		WeightToFeeCoefficients, WeightToFeePolynomial,
@@ -39,28 +42,46 @@ use frame_system::{
 	limits::{BlockLength, BlockWeights},
 	EnsureRoot,
 };
-pub use sp_runtime::{MultiAddress, Perbill, Permill};
+pub use sp_runtime::{MultiAddress, Perbill, Permill, Perquintill};
 
-use runtime_common::{
-	opaque, AccountId, AuraId, Balance, BlockNumber, Hash, Index, Signature, EXISTENTIAL_DEPOSIT,
-	MICROUNIT, MILLIUNIT,
-};
+use runtime_common::{opaque, AuraId, Index, EXISTENTIAL_DEPOSIT, MICROUNIT, MILLIUNIT, NANOUNIT};
 
 use cumulus_pallet_parachain_system::RelayNumberStrictlyIncreases;
 
 use xcm_config::{XcmConfig, XcmOriginToTransactDispatchOrigin};
 
+use currency::Amount;
+use orml_traits::{currency::MutationHooks, parameter_type_with_key};
+
 #[cfg(any(feature = "std", test))]
 pub use sp_runtime::BuildStorage;
 
+pub use issue::{Event as IssueEvent, IssueRequest};
+pub use nomination::Event as NominationEvent;
+pub use redeem::{Event as RedeemEvent, RedeemRequest};
+pub use replace::{Event as ReplaceEvent, ReplaceRequest};
+pub use security::StatusCode;
+pub use stellar_relay::traits::{FieldLength, Organization, Validator};
+
+pub use module_oracle_rpc_runtime_api::BalanceWrapper;
+use oracle::dia::DiaOracleAdapter;
+
 // Polkadot imports
 use polkadot_runtime_common::{BlockHashCount, SlowAdjustingFeeUpdate};
+
+use spacewalk_primitives::{
+	self as primitives, AccountId, Balance, BlockNumber, CurrencyId, CurrencyId::XCM,
+	ForeignCurrencyId, Hash, Moment, Signature, SignedFixedPoint, SignedInner, UnsignedFixedPoint,
+	UnsignedInner,
+};
 
 use weights::{BlockExecutionWeight, ExtrinsicBaseWeight, RocksDbWeight};
 
 // XCM Imports
 use xcm::latest::prelude::BodyId;
 use xcm_executor::XcmExecutor;
+
+pub type VaultId = primitives::VaultId<AccountId, CurrencyId>;
 
 /// The address format for describing accounts.
 pub type Address = MultiAddress<AccountId, ()>;
@@ -73,6 +94,8 @@ pub type Block = generic::Block<Header, UncheckedExtrinsic>;
 
 /// A Block signed with a Justification
 pub type SignedBlock = generic::SignedBlock<Block>;
+
+pub type SignedPayload = generic::SignedPayload<RuntimeCall, SignedExtra>;
 
 /// BlockId type as expected by this runtime.
 pub type BlockId = generic::BlockId<Block>;
@@ -104,6 +127,69 @@ pub type Executive = frame_executive::Executive<
 	Runtime,
 	AllPalletsWithSystem,
 >;
+
+type DataProviderImpl = DiaOracleAdapter<
+	DiaOracle,
+	UnsignedFixedPoint,
+	Moment,
+	primitives::DiaOracleKeyConvertor,
+	ConvertPrice,
+	ConvertMoment,
+>;
+
+pub struct ConvertPrice;
+impl Convert<u128, Option<UnsignedFixedPoint>> for ConvertPrice {
+	fn convert(price: u128) -> Option<UnsignedFixedPoint> {
+		Some(UnsignedFixedPoint::from_inner(price))
+	}
+}
+
+pub struct ConvertMoment;
+impl Convert<u64, Option<Moment>> for ConvertMoment {
+	fn convert(moment: u64) -> Option<Moment> {
+		Some(moment)
+	}
+}
+
+impl frame_system::offchain::SigningTypes for Runtime {
+	type Public = <Signature as sp_runtime::traits::Verify>::Signer;
+	type Signature = Signature;
+}
+
+impl<LocalCall> frame_system::offchain::CreateSignedTransaction<LocalCall> for Runtime
+where
+	RuntimeCall: From<LocalCall>,
+{
+	fn create_transaction<C: frame_system::offchain::AppCrypto<Self::Public, Self::Signature>>(
+		call: RuntimeCall,
+		public: <Signature as sp_runtime::traits::Verify>::Signer,
+		account: AccountId,
+		index: Index,
+	) -> Option<(
+		RuntimeCall,
+		<UncheckedExtrinsic as sp_runtime::traits::Extrinsic>::SignaturePayload,
+	)> {
+		let period = BlockHashCount::get() as u64;
+		let current_block = System::block_number().saturated_into::<u64>().saturating_sub(1);
+		let tip = 0;
+		let extra: SignedExtra = (
+			frame_system::CheckNonZeroSender::<Runtime>::new(),
+			frame_system::CheckSpecVersion::<Runtime>::new(),
+			frame_system::CheckTxVersion::<Runtime>::new(),
+			frame_system::CheckGenesis::<Runtime>::new(),
+			frame_system::CheckEra::<Runtime>::from(generic::Era::mortal(period, current_block)),
+			frame_system::CheckNonce::<Runtime>::from(index),
+			frame_system::CheckWeight::<Runtime>::new(),
+			pallet_transaction_payment::ChargeTransactionPayment::<Runtime>::from(tip),
+		);
+
+		let raw_payload = SignedPayload::new(call, extra).ok()?;
+		let signature = raw_payload.using_encoded(|payload| C::sign(payload, public))?;
+		let address = account;
+		let (call, extra, _) = raw_payload.deconstruct();
+		Some((call, (sp_runtime::MultiAddress::Id(address), signature.into(), extra)))
+	}
+}
 
 /// Handles converting a weight scalar to a fee value, based on the scale and granularity of the
 /// node's balance type.
@@ -164,6 +250,7 @@ pub const SLOT_DURATION: u64 = MILLISECS_PER_BLOCK;
 pub const MINUTES: BlockNumber = 60_000 / (MILLISECS_PER_BLOCK as BlockNumber);
 pub const HOURS: BlockNumber = MINUTES * 60;
 pub const DAYS: BlockNumber = HOURS * 24;
+pub const BLOCKS_PER_YEAR: BlockNumber = DAYS * 36525 / 100;
 
 /// We assume that ~5% of the block weight is consumed by `on_initialize` handlers. This is
 /// used to limit the maximal weight of a single extrinsic.
@@ -177,6 +264,24 @@ const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
 const MAXIMUM_BLOCK_WEIGHT: Weight =
 	Weight::from_ref_time(WEIGHT_REF_TIME_PER_SECOND.saturating_div(2))
 		.set_proof_size(cumulus_primitives_core::relay_chain::v2::MAX_POV_SIZE as u64);
+
+// todo: https://github.com/pendulum-chain/pendulum/pull/91#discussion_r1073402063
+// For mainnet USDC issued by centre.io
+// const WRAPPED_CURRENCY_ID: CurrencyId = CurrencyId::AlphaNum4 {
+// 	code: *b"USDC",
+// 	issuer: [
+// 		59, 153, 17, 56, 14, 254, 152, 139, 160, 168, 144, 14, 177, 207, 228, 79, 54, 111, 125,
+// 		190, 148, 107, 237, 7, 114, 64, 247, 246, 36, 223, 21, 197,
+// 	],
+// };
+// For Testnet USDC issued by
+const WRAPPED_CURRENCY_ID: CurrencyId = CurrencyId::AlphaNum4 {
+	code: *b"USDC",
+	issuer: [
+		20, 209, 150, 49, 176, 55, 23, 217, 171, 154, 54, 110, 16, 50, 30, 226, 102, 231, 46, 199,
+		108, 171, 97, 144, 240, 161, 51, 109, 72, 34, 159, 139,
+	],
+};
 
 /// The version information used to identify this runtime when compiled natively.
 #[cfg(feature = "std")]
@@ -379,7 +484,7 @@ impl pallet_session::Config for Runtime {
 	// Essentially just Aura, but lets be pedantic.
 	type SessionHandler = <SessionKeys as sp_runtime::traits::OpaqueKeys>::KeyTypeIdProviders;
 	type Keys = SessionKeys;
-	type WeightInfo = ();
+	type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
 }
 
 impl pallet_aura::Config for Runtime {
@@ -413,9 +518,188 @@ impl pallet_collator_selection::Config for Runtime {
 	type ValidatorId = <Self as frame_system::Config>::AccountId;
 	type ValidatorIdOf = pallet_collator_selection::IdentityCollator;
 	type ValidatorRegistration = Session;
+	type WeightInfo = pallet_collator_selection::weights::SubstrateWeight<Runtime>;
+}
+
+parameter_type_with_key! {
+	pub ExistentialDeposits: |_currency_id: CurrencyId| -> Balance {
+		NANOUNIT
+	};
+}
+
+pub struct DustRemovalWhitelist;
+impl Contains<AccountId> for DustRemovalWhitelist {
+	fn contains(_a: &AccountId) -> bool {
+		true
+	}
+}
+
+pub struct CurrencyHooks<T>(PhantomData<T>);
+impl<T: orml_tokens::Config> MutationHooks<T::AccountId, T::CurrencyId, T::Balance>
+	for CurrencyHooks<T>
+{
+	type OnDust = orml_tokens::BurnDust<T>;
+	type OnSlash = ();
+	type PreDeposit = ();
+	type PostDeposit = ();
+	type PreTransfer = ();
+	type PostTransfer = ();
+	type OnNewTokenAccount = ();
+	type OnKilledTokenAccount = ();
+}
+
+impl orml_tokens::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type Balance = Balance;
+	type Amount = primitives::Amount;
+	type CurrencyId = CurrencyId;
+	type WeightInfo = ();
+	type ExistentialDeposits = ExistentialDeposits;
+	type CurrencyHooks = CurrencyHooks<Runtime>;
+	type MaxLocks = ConstU32<50>;
+	type MaxReserves = ConstU32<0>;
+	type ReserveIdentifier = [u8; 8];
+	type DustRemovalWhitelist = DustRemovalWhitelist;
+}
+
+pub struct CurrencyConvert;
+impl currency::CurrencyConversion<currency::Amount<Runtime>, CurrencyId> for CurrencyConvert {
+	fn convert(
+		amount: &currency::Amount<Runtime>,
+		to: CurrencyId,
+	) -> Result<currency::Amount<Runtime>, DispatchError> {
+		Oracle::convert(amount, to)
+	}
+}
+
+parameter_types! {
+	pub const RelayChainCurrencyId: CurrencyId = XCM(ForeignCurrencyId::KSM);
+	pub const NativeCurrencyId: CurrencyId = CurrencyId::Native;
+	pub const DefaultWrappedCurrencyId: CurrencyId = WRAPPED_CURRENCY_ID;
+}
+impl currency::Config for Runtime {
+	type UnsignedFixedPoint = UnsignedFixedPoint;
+	type SignedInner = SignedInner;
+	type SignedFixedPoint = SignedFixedPoint;
+	type Balance = Balance;
+	type GetNativeCurrencyId = NativeCurrencyId;
+	type GetRelayChainCurrencyId = RelayChainCurrencyId;
+	type AssetConversion = primitives::AssetConversion;
+	type BalanceConversion = primitives::BalanceConversion;
+	type CurrencyConversion = CurrencyConvert;
+}
+
+impl security::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type WeightInfo = security::SubstrateWeight<Runtime>;
+}
+
+impl staking::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type SignedInner = SignedInner;
+	type SignedFixedPoint = SignedFixedPoint;
+	type GetNativeCurrencyId = NativeCurrencyId;
+	type CurrencyId = CurrencyId;
+}
+
+impl oracle::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type WeightInfo = oracle::SubstrateWeight<Runtime>;
+	type DataProvider = DataProviderImpl;
+}
+
+parameter_types! {
+	pub const OrganizationLimit: u32 = 255;
+	pub const ValidatorLimit: u32 = 255;
+}
+
+impl stellar_relay::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type OrganizationId = u128;
+	type OrganizationLimit = OrganizationLimit;
+	type ValidatorLimit = ValidatorLimit;
 	type WeightInfo = ();
 }
 
+impl reward::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type SignedFixedPoint = SignedFixedPoint;
+	type RewardId = VaultId;
+	type CurrencyId = CurrencyId;
+	type GetNativeCurrencyId = NativeCurrencyId;
+}
+
+parameter_types! {
+	pub const FeePalletId: PalletId = PalletId(*b"mod/fees");
+	pub const VaultRegistryPalletId: PalletId = PalletId(*b"mod/vreg");
+
+	pub const MaxExpectedValue: UnsignedFixedPoint = UnsignedFixedPoint::from_inner(<UnsignedFixedPoint as FixedPointNumber>::DIV);
+	pub FeeAccount: AccountId = FeePalletId::get().into_account_truncating();
+}
+
+impl fee::Config for Runtime {
+	type FeePalletId = FeePalletId;
+	type WeightInfo = fee::SubstrateWeight<Runtime>;
+	type SignedFixedPoint = SignedFixedPoint;
+	type SignedInner = SignedInner;
+	type UnsignedFixedPoint = UnsignedFixedPoint;
+	type UnsignedInner = UnsignedInner;
+	type VaultRewards = VaultRewards;
+	type VaultStaking = VaultStaking;
+	type OnSweep = currency::SweepFunds<Runtime, FeeAccount>;
+	type MaxExpectedValue = MaxExpectedValue;
+}
+
+impl vault_registry::Config for Runtime {
+	type PalletId = VaultRegistryPalletId;
+	type RuntimeEvent = RuntimeEvent;
+	type Balance = Balance;
+	type WeightInfo = vault_registry::SubstrateWeight<Runtime>;
+	type GetGriefingCollateralCurrencyId = NativeCurrencyId;
+}
+
+impl redeem::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type WeightInfo = redeem::SubstrateWeight<Runtime>;
+}
+
+pub struct BlockNumberToBalance;
+
+impl sp_runtime::traits::Convert<BlockNumber, Balance> for BlockNumberToBalance {
+	fn convert(a: BlockNumber) -> Balance {
+		a.into()
+	}
+}
+
+impl issue::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type BlockNumberToBalance = BlockNumberToBalance;
+	type WeightInfo = issue::SubstrateWeight<Runtime>;
+}
+
+impl nomination::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type WeightInfo = nomination::SubstrateWeight<Runtime>;
+}
+
+impl replace::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type WeightInfo = replace::SubstrateWeight<Runtime>;
+}
+
+impl<C> frame_system::offchain::SendTransactionTypes<C> for Runtime
+where
+	RuntimeCall: From<C>,
+{
+	type Extrinsic = UncheckedExtrinsic;
+	type OverarchingCall = RuntimeCall;
+}
+impl dia_oracle::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type RuntimeCall = RuntimeCall;
+	type AuthorityId = dia_oracle::crypto::DiaAuthId;
+	type WeightInfo = dia_oracle::weights::DiaWeightInfo<Runtime>;
+}
 // Create the runtime by composing the FRAME pallets that were previously configured.
 construct_runtime!(
 	pub enum Runtime where
@@ -447,6 +731,23 @@ construct_runtime!(
 		PolkadotXcm: pallet_xcm::{Pallet, Call, Event<T>, Origin, Config} = 31,
 		CumulusXcm: cumulus_pallet_xcm::{Pallet, Event<T>, Origin} = 32,
 		DmpQueue: cumulus_pallet_dmp_queue::{Pallet, Call, Storage, Event<T>} = 33,
+
+		// Currency pallet required this.
+		Tokens: orml_tokens::{Pallet, Call, Storage, Config<T>, Event<T>} = 53,
+
+		Security: security::{Pallet, Call, Config, Storage, Event<T>} = 55,
+		VaultStaking: staking::{Pallet, Storage, Event<T>} = 56,
+		Oracle: oracle::{Pallet, Call, Config, Storage, Event<T>} = 57,
+		Currency: currency::{Pallet} = 58,
+		StellarRelay: stellar_relay::{Pallet, Call, Config<T>, Storage, Event<T>} = 59,
+		VaultRewards: reward::{Pallet, Call, Storage, Event<T>} = 60,
+		Fee: fee::{Pallet, Call, Config<T>, Storage} = 61,
+		VaultRegistry: vault_registry::{Pallet, Call, Config<T>, Storage, Event<T>, ValidateUnsigned} = 62,
+		Redeem: redeem::{Pallet, Call, Config<T>, Storage, Event<T>} = 63,
+		Issue: issue::{Pallet, Call, Config<T>, Storage, Event<T>} = 64,
+		Nomination: nomination::{Pallet, Call, Config, Storage, Event<T>} = 65,
+		DiaOracle: dia_oracle::{Pallet, Call, Config<T>, Storage, Event<T>} = 66,
+		Replace: replace::{Pallet, Call, Config<T>, Storage, Event<T>} = 67,
 	}
 );
 
@@ -463,6 +764,14 @@ mod benches {
 		[pallet_timestamp, Timestamp]
 		[pallet_collator_selection, CollatorSelection]
 		[cumulus_pallet_xcmp_queue, XcmpQueue]
+		[oracle, Oracle]
+		[stellar_relay, StellarRelay]
+		[fee, Fee]
+		[vault_registry, VaultRegistry]
+		[redeem, Redeem]
+		[issue, Issue]
+		[nomination, Nomination]
+		[replace, Replace]
 	);
 }
 
@@ -636,6 +945,115 @@ impl_runtime_apis! {
 			Ok(batches)
 		}
 	}
+
+	impl module_issue_rpc_runtime_api::IssueApi<
+		Block,
+		AccountId,
+		H256,
+		IssueRequest<AccountId, BlockNumber, Balance, CurrencyId>
+	> for Runtime {
+		fn get_issue_requests(account_id: AccountId) -> Vec<H256> {
+			Issue::get_issue_requests_for_account(account_id)
+		}
+
+		fn get_vault_issue_requests(vault_id: AccountId) -> Vec<H256> {
+			Issue::get_issue_requests_for_vault(vault_id)
+		}
+	}
+
+	impl module_vault_registry_rpc_runtime_api::VaultRegistryApi<
+		Block,
+		VaultId,
+		Balance,
+		UnsignedFixedPoint,
+		CurrencyId,
+		AccountId,
+	> for Runtime {
+		fn get_vault_collateral(vault_id: VaultId) -> Result<BalanceWrapper<Balance>, DispatchError> {
+			let result = VaultRegistry::compute_collateral(&vault_id)?;
+			Ok(BalanceWrapper{amount:result.amount()})
+		}
+
+		fn get_vaults_by_account_id(account_id: AccountId) -> Result<Vec<VaultId>, DispatchError> {
+			VaultRegistry::get_vaults_by_account_id(account_id)
+		}
+
+		fn get_vault_total_collateral(vault_id: VaultId) -> Result<BalanceWrapper<Balance>, DispatchError> {
+			let result = VaultRegistry::get_backing_collateral(&vault_id)?;
+			Ok(BalanceWrapper{amount:result.amount()})
+		}
+
+		fn get_premium_redeem_vaults() -> Result<Vec<(VaultId, BalanceWrapper<Balance>)>, DispatchError> {
+			let result = VaultRegistry::get_premium_redeem_vaults()?;
+			Ok(result.iter().map(|v| (v.0.clone(), BalanceWrapper{amount:v.1.amount()})).collect())
+		}
+
+		fn get_vaults_with_issuable_tokens() -> Result<Vec<(VaultId, BalanceWrapper<Balance>)>, DispatchError> {
+			let result = VaultRegistry::get_vaults_with_issuable_tokens()?;
+			Ok(result.into_iter().map(|v| (v.0, BalanceWrapper{amount:v.1.amount()})).collect())
+		}
+
+		fn get_vaults_with_redeemable_tokens() -> Result<Vec<(VaultId, BalanceWrapper<Balance>)>, DispatchError> {
+			let result = VaultRegistry::get_vaults_with_redeemable_tokens()?;
+			Ok(result.into_iter().map(|v| (v.0, BalanceWrapper{amount:v.1.amount()})).collect())
+		}
+
+		fn get_issuable_tokens_from_vault(vault: VaultId) -> Result<BalanceWrapper<Balance>, DispatchError> {
+			let result = VaultRegistry::get_issuable_tokens_from_vault(&vault)?;
+			Ok(BalanceWrapper{amount:result.amount()})
+		}
+
+		fn get_collateralization_from_vault(vault: VaultId, only_issued: bool) -> Result<UnsignedFixedPoint, DispatchError> {
+			VaultRegistry::get_collateralization_from_vault(vault, only_issued)
+		}
+
+		fn get_collateralization_from_vault_and_collateral(vault: VaultId, collateral: BalanceWrapper<Balance>, only_issued: bool) -> Result<UnsignedFixedPoint, DispatchError> {
+			let amount = Amount::new(collateral.amount, vault.collateral_currency());
+			VaultRegistry::get_collateralization_from_vault_and_collateral(vault, &amount, only_issued)
+		}
+
+		fn get_required_collateral_for_wrapped(amount_wrapped: BalanceWrapper<Balance>, currency_id: CurrencyId) -> Result<BalanceWrapper<Balance>, DispatchError> {
+			let amount_wrapped = Amount::new(amount_wrapped.amount, DefaultWrappedCurrencyId::get());
+			let result = VaultRegistry::get_required_collateral_for_wrapped(&amount_wrapped, currency_id)?;
+			Ok(BalanceWrapper{amount:result.amount()})
+		}
+
+		fn get_required_collateral_for_vault(vault_id: VaultId) -> Result<BalanceWrapper<Balance>, DispatchError> {
+			let result = VaultRegistry::get_required_collateral_for_vault(vault_id)?;
+			Ok(BalanceWrapper{amount:result.amount()})
+		}
+	}
+
+	impl module_redeem_rpc_runtime_api::RedeemApi<
+		Block,
+		AccountId,
+		H256,
+		RedeemRequest<AccountId, BlockNumber, Balance, CurrencyId>
+	> for Runtime {
+		fn get_redeem_requests(account_id: AccountId) -> Vec<H256> {
+			Redeem::get_redeem_requests_for_account(account_id)
+		}
+
+		fn get_vault_redeem_requests(vault_account_id: AccountId) -> Vec<H256> {
+			Redeem::get_redeem_requests_for_vault(vault_account_id)
+		}
+	}
+
+	impl module_replace_rpc_runtime_api::ReplaceApi<
+		Block,
+		AccountId,
+		H256,
+		ReplaceRequest<AccountId, BlockNumber, Balance, CurrencyId>
+	> for Runtime {
+		fn get_old_vault_replace_requests(vault_id: AccountId) -> Vec<H256> {
+			Replace::get_replace_requests_for_old_vault(vault_id)
+		}
+
+		fn get_new_vault_replace_requests(vault_id: AccountId) -> Vec<H256> {
+			Replace::get_replace_requests_for_new_vault(vault_id)
+		}
+	}
+
 }
 
 struct CheckInherents;
