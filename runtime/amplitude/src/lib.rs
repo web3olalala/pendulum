@@ -12,7 +12,7 @@ pub mod xcm_config;
 pub mod zenlink;
 use crate::zenlink::*;
 use xcm::v1::MultiLocation;
-use zenlink_protocol::{AssetBalance, MultiAssetsHandler, PairInfo};
+use zenlink_protocol::{AssetBalance, MultiAssetsHandler, PairInfo, AssetId};
 
 pub use parachain_staking::InflationInfo;
 
@@ -1187,6 +1187,8 @@ impl_runtime_apis! {
 				amount_1_min
 			)
 		}
+
+		fn calculate_remove_liquidity(_: AssetId, _: AssetId, _: u128) -> Option<(u128, u128)> { todo!() }
 	}
 
 	#[cfg(feature = "try-runtime")]
